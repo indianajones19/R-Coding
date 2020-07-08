@@ -1,0 +1,553 @@
+---
+title: "Retail_Data_Forcasting"
+author: "Muhammad Rahman"
+date: "April 5, 2020"
+output: rmd file
+link to Dataset: https://archive.ics.uci.edu/ml/datasets/online+retail
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+## Initial Data Analysis:
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("H:/Ryerson Data Science and Analytics/06. CKME 136 - Capstone Project/MSR Capstone Project/DataSet from UCI and Code Capstone")
+
+raw_retail_data <- read.csv(file= "Online_Retail.csv", header = TRUE, sep = ",", dec = ",", fill = TRUE, comment.char = "")
+
+View (raw_retail_data)
+
+str (raw_retail_data)
+
+sum(is.na(raw_retail_data)) ## Checking NA. 135080 found
+
+colSums(is.na(raw_retail_data)) ## Checking which column has how many NA. All NA found in CustomerID.
+
+sapply(raw_retail_data, function(x) length(unique(x))) ## Checking unique number of items of each column.
+
+```
+
+## Note: we have 135,080 missing value in CustomerID leaving us with 406,829 entries with CustomerID. There are 4373 unique Customers among 406,829 CustomerIDs. We assume these missing values represents a number of guest shoppers unless there are really missing informaiton here. However, even if we do not consider CustomerID, our analysis can be done leveraging rest of the data points. Let's move on.
+
+## We have 38 unique Country. Decided to keep this value as factor.
+
+## We need to know sales informaiton. Therefore, Quantitiy and UniPrice will be two important data. We will convert both of them to numeric, Quantity as Integer and UnitPrice as Float. Uniqe value is not considerable here.
+
+## There is StockCode and Description of the item representing products sold. we will consider only StockCode.
+
+## Further analysis revealed, IvoiceNo will be the best to consider in terms of identifing sales since each sale must have an InvoiceNo and there is no missing data. 
+
+## Now that we are good with InvoiceNo to identify each sale and determine actual monetary value of each sale by multiplying Quantity with UnitPrice and cll it Earning. We are good to go with analysis of time series data. By the way, please consider there are 25,900 unique InvoiceNo indicating customer purchasing from 38 different counteis. 
+
+## We will take InvoiceDate and split it into Sell_Date and Sell_Time. Furhter we will extract DayOfWeek, Month, and Year. Finally we will determine SellStatus by analysing Earning value. Positive values indicate Sold and Negetive valuse indicating Returned.
+
+```{r loading required packages}
+
+#========================================= Initial Setup ==============================================
+
+#create a function to check for installed packages and install them if they are not installed
+
+install <- function(packages){
+  new.packages <- packages[!(packages %in% installed.packages()[, "Package"])]
+  if (length(new.packages)) 
+    install.packages(new.packages, dependencies = TRUE)
+  sapply(packages, require, character.only = TRUE)
+} 
+
+# Required packages:
+
+required.packages <- c("caret", "broom", "ggcorrplot","matrixStats", "tidyverse", "timetk", "prophet", "tidyquant", "modelr", "gridExtra", "grid")
+
+install(required.packages)
+
+options(na.action = na.warn)
+```
+
+Package Description:
+caret: The caret package (short for Classification And REgression Training) is a set of functions that attempt to streamline the process for creating predictive models. The package contains tools for: data splitting. pre-processing
+broom: broom is a package for tidying statistical models into data frames
+ggcorrplot: This package is used to visualize easily a correlation matrix using 'ggplot2'. It provides a solution for reordering the correlation matrix and displays the significance level on the plot. It also includes a function for computing a matrix of correlation p-values.
+matrixStats: Functions that Apply to Rows and Columns of Matrices (and to Vectors). matrixStats is a high-performing functions operating on rows and columns of matrices, e.g. col / rowMedians(), col / rowRanks(), and col / rowSds(). Functions optimized per data type and for subsetted calculations such that both memory usage and processing time is minimized. There are also optimized vector-based methods, e.g. binMeans(), madDiff() and weightedMedian().
+tidyverse: The tidyverse is an opinionated collection of R packages designed for data science. All packages share an underlying design philosophy, grammar, and data structures. See how the tidyverse makes data science faster, easier and more fun with “R for Data Science”
+timetk: A Tool Kit for Working with Time Series in R. timetk is used for easy visualization, wrangling, and preprocessing of time series data for forecasting and machine learning prediction. 
+prophet: Prophet is a procedure for forecasting time series data based on an additive model where non-linear trends are fit with yearly, weekly, and daily seasonality, plus holiday effects.
+tidyquant: Tidy Quantitative Financial Analysis: This R package brings business and financial analysis to the 'tidyverse'. The 'tidyquant' package provides a convenient wrapper to various 'xts', 'zoo', 'quantmod', 'TTR' and 'PerformanceAnalytics' package functions and returns the objects in the tidy 'tibble' format. The main advantage is being able to use quantitative functions with the 'tidyverse' functions including 'purrr', 'dplyr', 'tidyr', 'ggplot2', 'lubridate', etc. 
+modelr:  Modeling Functions that Work with the Pipe. This is a set of functions for modeling that helps seamlessly integrate modeling into a pipeline of data manipulation and visualization. This set of functions imports ‘broom’, ‘magrittr’, ‘purrr’, ‘rlang’, ‘tibble’, ‘tidyr’, ‘tidyselect’, ‘vctrs’. 
+gridExtra: Miscellaneous Functions for "Grid" Graphics
+Provides a number of user-level functions to work with "grid" graphics, notably to arrange multiple grid-based plots on a page, and draw tables.
+grid: An R function to add grid to graphs.
+prophet: Prophet is a procedure for forecasting time series data based on an additive model where non-linear trends are fit with yearly, weekly, and daily seasonality, plus holiday effects. ... Prophet is open source software released by Facebook's Core Data Science team. It is available for download on CRAN and PyPI.
+predict: The prediction and margins packages are a combined effort to port the functionality of Stata's (closed source) margins command to (open source) R. prediction is focused on one function - prediction() - that provides type-safe methods for generating predictions from fitted regression models.
+
+## Dataset Loading and Preprocessing (Data Source: https://archive.ics.uci.edu/ml/datasets/online+retail), Here data is loaded from my local working directory after downloading from the abover source.
+
+## Here is the code used to read data and transform it as planned.
+
+```{r load retail dataset, echo=FALSE}
+retail_data <- read_csv("Online_Retail.csv",
+                   col_types = cols(
+                      InvoiceNo = col_character(),
+                      StockCode = col_character(),
+                      Description = col_character(),
+                      Quantity = col_integer(),
+                      InvoiceDate = col_datetime("%m/%d/%Y %H:%M"),
+                      UnitPrice = col_double(),
+                      CustomerID = col_integer(),
+                      Country = col_character()
+                      )) %>%
+mutate(sell_date = parse_date(format(InvoiceDate, "%Y-%m-%d")),
+         day_of_week = wday(sell_date, label = TRUE),
+         sell_time = parse_time(format(InvoiceDate, "%H:%M")),
+         month = format(InvoiceDate, "%m"),
+         earning = Quantity * UnitPrice,
+         sell_status = ifelse(Quantity > 0, "sold", "returned"))
+```
+
+
+# Data oraganization
+
+
+```{r}
+View(retail_data)
+str(retail_data)
+write.csv(retail_data, "new_retail_data.csv")
+```
+
+MSR Comments:
+Initial analysis reveals:
+Total No or Rows: 541909
+There is no NA value in any columnn except in CustomerId
+Total NA value in CustomerId = 135080
+This leaves 541909 - 135080 = 406829 Rows of data.
+
+We could not find any logic to impute the CustomerId value in the dataset. There are transaction data for other datafields where CustomerId is missing. this could be the result of guest purchases.
+We can assume a number for guest and impute CustomerId field - Ask Professor.
+Otherwise we have 406829 rows of data for our analysis.
+
+Now it is time to get missing and unique values in each columns considered for data analysis.
+
+```{r checking missing value }
+colSums(is.na(retail_data))
+```
+
+# Above code result shows that, there are 1454 missing value in Description and 135080 in CustomerID column. We discussed about CustomerID before. As we see StockCode is correspondent for Description and StockCode does not have any missing value, we will consider StockCode in our Analysis and ignore Description.
+
+
+#Exploratory Data Analysis
+
+
+```{r Unique items in Column 1, 2, 7 & 8, meaning column: InvoiceNo, StockCode, CustomerId and Country }
+sapply(retail_data[,c(1, 2, 7, 8)],function(x)length(unique(x)))
+```
+
+We have 25900 unique InvoiceNo,  4070 unique StockCode, 4373 unique CustomerID and  38 unique Country in the dataset out of a total of 541909 records.
+
+Therefore, we can conclude:
+
+There are 25900 orders placed where there were multiple items in the order. These items are one or more representing the 4070 StockCodes.
+
+4373 Uniques customers placed these orders from 38 different countries. means, many of these customers are repeatign customers placed variety of orders combination of multiple items in each order.
+
+Obviously, these repeating customers placed their orders in different time of the year.
+
+
+```{r Let's start with Country. Name of countries:  }
+unique(retail_data$Country)
+
+# Since this data is a UK based online retail store, possibility is there that maximum sales may come from UK. Let's check it out.
+
+sum(retail_data$Country == "United Kingdom")
+
+# 495478 record found for United Kingdom
+```
+
+# Let's see how many of each item sold. We will see first 6 records as sample.
+```{r Number of items sold}
+retail_data %>%
+  group_by(StockCode, Description) %>%
+  summarise(Total_Quantity = sum(Quantity)) %>%
+  arrange(-Total_Quantity) %>% head()
+```
+# Looks like things getting interesting. 
+
+
+# Let us plot country wide selling trend. We will keep United Kingdom separate from the rest.
+
+```{r Courntry wise selling trend. Plot1 is only for United Kingdom and Plot2 is for rest }
+
+plot1 <- retail_data %>%
+  filter(Country == "United Kingdom") %>%
+  ggplot(aes(x = Country, fill = sell_status)) +
+    geom_bar(alpha = .6) +
+    scale_fill_tq(values = palette_dark()) +
+    theme_tq() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    guides(fill = FALSE) +
+    labs(x = "")
+
+plot2 <- retail_data %>%
+  filter(Country != "United Kingdom") %>%
+  ggplot(aes(x = Country, fill = sell_status)) +
+    geom_bar(alpha = .6) +
+    scale_fill_tq(values = palette_green()) +
+    theme_tq() +
+    theme(legend.position = "right") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = .9)) +
+    labs(x = "", fill = "")
+
+title <- textGrob("Country-wise Selling Trend", gp = gpar(fontface = "bold", cex = 1.5))
+
+grid.arrange(plot1, plot2, top=title, widths = c(0.2, 1.2))
+```
+
+
+```{r Sell_status, Sold / Returned Analysis over time}
+retail_data %>%
+  ggplot(aes(x = sell_date, color = sell_status)) + ggtitle("Number of sells/returns over time") + 
+  theme(plot.title = element_text(hjust = 0.5))+
+    facet_grid(sell_status ~ ., scales = "free") +
+    geom_freqpoly(bins = 80, size = 1, alpha = 0.9) +
+    scale_color_tq(values = palette_dark()) 
+```
+
+
+# Purchases over the time of the day
+
+```{r Sales over time during the day, compared over time}
+retail_data %>%
+  ggplot(aes(x = sell_time, y = sell_date)) + ggtitle("Transactions trend over the time of the day") +   theme(plot.title = element_text(hjust = 0.5))+
+    stat_bin_2d(alpha = 1, bins = 19, color = "grey") +
+    scale_fill_gradientn(colours = c(palette_green()[[1]], palette_dark()[[2]])) 
+```
+
+# Earnings per day over the months of the year
+```{r Earning per day over month}
+retail_data %>%
+  mutate(day = format(InvoiceDate, "%d")) %>%
+  group_by(month, day) %>%
+  summarise(Earnings = sum(earning)) %>%
+  ggplot(aes(x = month, y = day, fill = Earnings)) + ggtitle("Total earnings per day over the months") +   theme(plot.title = element_text(hjust = 0.5))+ ylab("Days of the month")+ 
+    geom_tile(alpha = 1, color = "grey") +
+    scale_fill_gradientn(colours = c(palette_green()[[1]], palette_dark()[[2]])) +
+    theme(legend.position = "right") 
+```
+# From January to December, the graph above shows sales of each day of the month. Overall sales grew uniformly throuout the year and took a spike twoards the end the year. The final quarter was good.
+
+
+# Let's revisit quantities of item sold.
+```{r Number of items sold}
+retail_data %>%
+  group_by(StockCode, Description) %>%
+  summarise(Total_Quantity = sum(Quantity)) %>%
+  arrange(-Total_Quantity) %>% head()
+```
+
+# As we see from above code result, different items (as per StockCode) is sold in different quantity. We like to see them in groups. Such as sold below 10,000, in between 10,000 to 50,000, more than 50,000. Also want to see sales including returns and only sold items.
+
+```{r Sum of all Quantity }
+
+# sum of Quantitiy including returns
+
+p1 <- retail_data %>%
+  group_by(StockCode, Description) %>%
+  summarise(Total_Quantity = sum(Quantity)) %>%
+  ggplot(aes(x = Total_Quantity)) +
+    geom_density(fill = palette_light()[[1]], alpha = 0.8) +
+    theme_tq()
+
+# Sum of Quantitiy without returns 
+
+p2 <- retail_data %>%
+  group_by(StockCode, Description) %>%
+  summarise(Total_Quantity = sum(Quantity)) %>%
+  filter(Total_Quantity > 1) %>%
+  ggplot(aes(x = Total_Quantity)) +
+    geom_density(fill = palette_light()[[1]], alpha = 0.8) +
+    theme_tq()
+
+# Sum of Quantitiy with high volume ( > 10000)
+
+p3 <- retail_data %>%
+  group_by(StockCode, Description) %>%
+  summarise(Total_Quantity = sum(Quantity)) %>%
+  filter(Total_Quantity > 10000) %>%
+  ggplot(aes(x = Total_Quantity)) +
+    geom_density(fill = palette_light()[[1]], alpha = 0.8) +
+    theme_tq()
+
+title1 <- textGrob("Selling trend of product by quantity", gp = gpar(fontface = "bold", cex = 1.5))    
+
+grid.arrange(p1, p2, p3, ncol = 3,top=title1 ,widths = c(0.6, 0.5, 0.7))
+```
+
+# Top sell, transaction and top sold items
+```{r}
+top_sold_items <- retail_data %>%
+  group_by(sell_date, StockCode, Description) %>%
+  summarise(sum = sum(Quantity)) %>%
+  group_by(StockCode, Description)%>%
+  summarise(n = n()) %>%
+  arrange(-n)
+
+top_items_transactions <- retail_data %>%
+  filter(StockCode %in% top_sold_items$StockCode[1:5]) %>%
+  group_by(sell_date, StockCode) %>%
+  summarise(sum = sum(Quantity)) %>%
+  spread(key = StockCode, value = sum)
+
+retail_data %>%
+  filter(StockCode %in% top_sold_items$StockCode[1:5]) %>%
+  group_by(sell_date, StockCode, Description) %>%
+  summarise(sum = sum(Quantity)) %>%
+  ggplot(aes(x = sell_date, y = sum)) +
+    facet_wrap(~ StockCode, ncol = 1, scales = "free") +
+    geom_line(color = palette_light()[[1]], size = 1, alpha = 0.8) +
+    theme_tq() +
+    labs(Title = "Top 5 Items' Sold by Quantity", x = "Top 5 Items' Selling Trends", 
+         y = "Quantity of Sold Items")
+```
+
+# The most sold item is "WHITE HANGING HEART T-LIGHT HOLDER" with StockCode 85123A. Let's analyze the sales trend of only this item:
+
+```{r StockCode 85123A sell analysis}
+
+retail_data %>%
+  filter(StockCode == "85123A") %>%
+  group_by(sell_date, sell_status) %>%
+  summarise(Most_sold_item = sum(Quantity)) %>%
+  ggplot(aes(x = sell_date, y = Most_sold_item, color = sell_status)) + ggtitle("Transaction History of Most Sold Item") +   theme(plot.title = element_text(hjust = 0.5))+ ylab("Item Quantities")+
+    facet_wrap(~ sell_status, ncol = 1, scales = "free") +
+    geom_line(size = .4, alpha = 1) + 
+    scale_color_tq(values = palette_dark()) 
+    
+```
+
+
+# Let's see how many recurring customer are there.
+```{r Recurring and One Time Customers}
+
+multiple_transactions <- retail_data %>%
+  group_by(sell_date, CustomerID) %>%
+  summarise(sum = sum(Quantity)) %>%
+  group_by(CustomerID) %>%
+  summarise(n = n()) %>%
+  mutate(revisited_customers = ifelse(n > 1, "reccurring_customers", "one_time_customers"))
+
+multiple_transactions # Shows a table of CustomerID & No of transaction (n) at first. n = 1 is one time and n > 1 revisiting / recurring customer. 
+
+length(which(multiple_transactions$revisited_customers == "reccurring_customers")) # 2992 recurring customers.
+```
+
+# Visualizing recurring versus one time custoemr
+
+```{r Visualization of Recurring and One Time Customers }
+
+revisited_customers_sell_date <- left_join(retail_data, multiple_transactions, by = "CustomerID") %>%
+  distinct(sell_date, CustomerID, revisited_customers) %>%
+  group_by(sell_date, revisited_customers) %>%
+  summarise(n = n()) %>%
+  spread(key = revisited_customers, value = n)
+
+revisited_customers_sell_date # Customers (as per CustoerID) revisiting on a daily basis versus one time customers
+
+multiple_transactions %>%
+  group_by(revisited_customers) %>%
+  summarise(n = n()) %>%
+  mutate(prop = n / sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = revisited_customers)) +ggtitle("Ratio of one-time customers & revisiting customers") +    theme(plot.title = element_text(hjust = 0.5))+ ylab("")+ xlab("")+
+    geom_bar(stat = "identity", alpha = 1) +
+    coord_polar("y", start = 0) +
+    scale_fill_tq(values = palette_dark()) 
+    
+```
+
+
+# Statistical Analysis: Starting with mean quantity sold per customer and mean earnings per day.
+
+```{r mean items sold, mean quantitity sold per customer and mean earning per customer on daily basis}
+
+purchases <- retail_data %>%
+  group_by(sell_date, CustomerID) %>%
+  summarise(n = n(),
+            Tot_item = sum(Quantity),
+            Tot_earning = sum(earning)) %>%
+  group_by(sell_date) %>%
+  summarise(mean_earning_per_customer = mean(Tot_earning),
+            mean_quantity_sold_per_customer = mean(Tot_item),
+            mean_items_sold_per_customer = mean(n))
+
+# Visualization
+
+purchases %>%
+  gather(x, y, mean_earning_per_customer:mean_items_sold_per_customer) %>%
+  ggplot(aes(x = sell_date, y = y)) + ggtitle("Selling Trend per Customer") + theme(plot.title = element_text(hjust = 0.5))+ ylab("")+ xlab("")+
+    facet_wrap(~ x, ncol = 1, scales = "free") +
+    geom_line(color = palette_light()[[1]], size = 1, alpha = 1) +
+    geom_smooth(color = palette_light()[[2]], method = 'loess') 
+    
+```
+
+
+# Let's analyze the return patterns
+```{r returned items analysis (on daily basis grouped by sell_date)}
+
+returned_items <- retail_data %>%
+  group_by(sell_date, sell_status) %>%
+  summarise(total_quantity = sum(Quantity)) %>%
+  spread(key = sell_status, value = total_quantity)
+
+returned_items # Need Visualization.
+
+
+```
+
+# How many different items are purchased/returned per day?
+
+```{r transactions per day: purchased and returned both}
+
+item_transactions <- retail_data %>%
+  group_by(sell_date, StockCode) %>%
+  summarise(n = n()) %>%
+  group_by(sell_date) %>%
+  summarise(item_transactions = n())
+
+# No Visualization
+
+item_transactions %>%
+  ggplot(aes(x = sell_date, y = item_transactions)) +
+    geom_line(color = palette_light()[[1]], size = 1, alpha = 0.8) +
+    geom_smooth(color = palette_light()[[2]], method = 'loess') +
+    theme_tq() +
+    labs(title= "Item Transactions Over the Time", x = "Transactions 2011", 
+         y = "number of different items",
+         color = "")
+```
+
+# Calculate Earnings:
+
+```{r Calculate total and mean quantity sold, with total and mean earning over time (each quarter)}
+net_earning <- retail_data %>%
+  group_by(sell_date) %>%
+  summarise(sum_earning = sum(earning),
+            mean_earning = mean(earning),
+            sum_quantity = sum(Quantity),
+            mean_quantity = mean(Quantity))
+
+net_earning %>%
+  gather(x, y, sum_earning:mean_quantity) %>%
+  ggplot(aes(x = sell_date, y = y)) +
+    facet_wrap(~ x, ncol = 1, scales = "free") +
+    geom_line(color = palette_light()[[1]], size = 1, alpha = 0.8) +
+    geom_smooth(color = palette_light()[[2]], method = 'loess') +
+    theme_tq() +
+    labs(title="Mean of Earning and Quantity with totals" ,x = "", 
+         y = "")
+```
+
+# Profits from sell and returns
+
+```{r Sell trends over time - calulated }
+sold_items <- retail_data %>%
+  filter(earning > 0) %>%
+  group_by(sell_date) %>%
+  summarise(sell_earning = sum(earning), # sell_earning_mean = mean(earning),
+            sell_quantity = sum(Quantity)) # sell_quantity_mean = mean(Quantity)
+            
+sold_items # Earnings from sales and from total quantity sold
+
+sold_items %>%
+  gather(x, y, sell_earning:sell_quantity) %>%
+  ggplot(aes(x = sell_date, y = y)) +
+    facet_wrap(~ x, ncol = 1, scales = "free") +
+    geom_line(color = palette_light()[[1]], size = 1, alpha = 0.8) +
+    geom_smooth(color = palette_light()[[2]], method = 'loess') +
+    theme_tq() +
+    labs(title= "Sell Trends",x = "", 
+         y = "")
+```
+
+```{r Return trends}
+return_items <- retail_data %>%
+  filter(earning < 0) %>%
+  group_by(sell_date) %>%
+  summarise(return_items_sum_price = sum(earning),
+            mean_return_items_price = mean(earning),
+            quantity_return_items = sum(Quantity),
+            mean_quantity_return_items = mean(Quantity))
+
+return_items # total price of returned items, their means, total and mean quantity returned
+
+return_items %>%
+  gather(x, y, return_items_sum_price:mean_quantity_return_items) %>%
+  ggplot(aes(x = sell_date, y = y)) +
+    facet_wrap(~ x, ncol = 1, scales = "free") +
+    geom_line(color = palette_light()[[1]], size = 1, alpha = 0.8) +
+    theme_tq() +
+    labs(x = "", 
+         y = "")
+```
+
+```{r Unit quantity Mean unit price of sold items}
+
+unit_quant <- distinct(select(retail_data, sell_date, StockCode, UnitPrice)) %>%
+  mutate(unit_quant = paste(sell_date, StockCode, sep = "_")) %>%
+  select(unit_quant, UnitPrice)
+
+unit_quant # this is the unitprice of each quantity sold as per StockCode on a single day, say on December 1st. Next is we need to see what is the mean unitprice for the same given day (sell_date).
+
+mean_unit_price <- retail_data %>%
+  filter(sell_status == "sold") %>%
+  group_by(sell_date, StockCode) %>%
+  summarise(n = n()) %>%
+  mutate(unit_quant = paste(sell_date, StockCode, sep = "_")) %>%
+  left_join(unit_quant, by = "unit_quant") %>%
+  group_by(sell_date, StockCode) %>%
+  summarise(mean = mean(UnitPrice)) %>%
+  group_by(sell_date) %>%
+  summarise(mean_unit_price = mean(mean))
+
+mean_unit_price # the mean of unit prices of total items sold on a given day (sell_date).
+
+mean_unit_price %>%
+  ggplot(aes(x = sell_date, y = mean_unit_price)) +
+    geom_line(color = palette_light()[[1]], size = 1, alpha = 0.8) +
+    theme_tq() +
+    labs(x = "", 
+         y = "mean unit price of sold items")
+```
+
+
+# Forcast on daily transaction: For forasting first, we need to creat a table by mutating retail data and introducing transactional space spread over four quarters: Spring, Summer, Fall and Winter. And we will do analysis on daily transactions. 
+
+
+```{r }
+transaction_per_day <- distinct(select(retail_data, sell_date, day_of_week, month)) %>%
+  left_join(net_earning, by = "sell_date") %>%
+  left_join(mean_unit_price, by = "sell_date") %>%
+  left_join(sold_items, by = "sell_date") %>%
+  left_join(return_items, by = "sell_date") %>%
+  left_join(purchases, by = "sell_date") %>%
+  left_join(revisited_customers_sell_date, by = "sell_date") %>%
+  left_join(returned_items, by = "sell_date") %>%
+  left_join(item_transactions, by = "sell_date") %>%
+  left_join(top_items_transactions, by = "sell_date") %>%
+  
+  mutate(diff_sum_earning = sell_earning - lag(sell_earning),
+         season = ifelse(month %in% c("03", "04", "05"), "spring",
+                         ifelse(month %in% c("06", "07", "08"), "summer",
+                                ifelse(month %in% c("09", "10", "11"), "fall", "winter"))))
+
+View(transaction_per_day) 
+
+write.csv(transaction_per_day, file = "trns_perday.csv")
+
+```
+
+# Note on submission: At this point we are planning to explore with training and test dataset from this table. Planning to work on creating some liner models. Train it using test data set and then predict feeding actual data. Work is in progress.
+
